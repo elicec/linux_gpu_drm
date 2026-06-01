@@ -158,7 +158,19 @@ panfrost_lookup_bos(struct drm_device *dev,
 	for (i = 0; i < job->bo_count; i++) {
 		struct panfrost_gem_mapping *mapping;
 
+		if (!job->bos[i]) {
+			dev_err(dev, "panfrost: NULL GEM object at index %d\n", i);
+			ret = -EINVAL;
+			break;
+		}
+
 		bo = to_panfrost_bo(job->bos[i]);
+		if (!bo) {
+			dev_err(dev, "panfrost: Invalid GEM object at index %d\n", i);
+			ret = -EINVAL;
+			break;
+		}
+
 		mapping = panfrost_gem_mapping_get(bo, priv);
 		if (!mapping) {
 			ret = -EINVAL;

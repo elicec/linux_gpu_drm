@@ -58,6 +58,11 @@ panfrost_gem_mapping_get(struct panfrost_gem_object *bo,
 {
 	struct panfrost_gem_mapping *iter, *mapping = NULL;
 
+	if (!bo || !priv) {
+		pr_err("panfrost: NULL pointer passed to panfrost_gem_mapping_get()\n");
+		return NULL;
+	}
+
 	mutex_lock(&bo->mappings.lock);
 	list_for_each_entry(iter, &bo->mappings.list, node) {
 		if (iter->mmu == &priv->mmu) {
