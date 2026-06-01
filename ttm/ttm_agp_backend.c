@@ -36,6 +36,7 @@
 #include <drm/ttm/ttm_tt.h>
 #include <drm/ttm/ttm_resource.h>
 #include <linux/agp_backend.h>
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/io.h>
@@ -127,14 +128,14 @@ struct ttm_tt *ttm_agp_tt_create(struct ttm_buffer_object *bo,
 {
 	struct ttm_agp_backend *agp_be;
 
-	agp_be = kmalloc(sizeof(*agp_be), GFP_KERNEL);
+	agp_be = kmalloc_obj(*agp_be);
 	if (!agp_be)
 		return NULL;
 
 	agp_be->mem = NULL;
 	agp_be->bridge = bridge;
 
-	if (ttm_tt_init(&agp_be->ttm, bo, page_flags, ttm_write_combined)) {
+	if (ttm_tt_init(&agp_be->ttm, bo, page_flags, ttm_write_combined, 0)) {
 		kfree(agp_be);
 		return NULL;
 	}

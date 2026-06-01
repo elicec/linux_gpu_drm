@@ -233,6 +233,10 @@ static void amdgpu_perf_start(struct perf_event *event, int flags)
 	if (WARN_ON_ONCE(!(hwc->state & PERF_HES_STOPPED)))
 		return;
 
+	if ((!pe->adev->df.funcs) ||
+	    (!pe->adev->df.funcs->pmc_start))
+		return;
+
 	WARN_ON_ONCE(!(hwc->state & PERF_HES_UPTODATE));
 	hwc->state = 0;
 
@@ -268,9 +272,12 @@ static void amdgpu_perf_read(struct perf_event *event)
 						  pmu);
 	u64 count, prev;
 
-	do {
-		prev = local64_read(&hwc->prev_count);
+	if ((!pe->adev->df.funcs) ||
+	    (!pe->adev->df.funcs->pmc_get_count))
+		return;
 
+	prev = local64_read(&hwc->prev_count);
+	do {
 		switch (hwc->config_base) {
 		case AMDGPU_PMU_EVENT_CONFIG_TYPE_DF:
 		case AMDGPU_PMU_EVENT_CONFIG_TYPE_XGMI:
@@ -281,7 +288,7 @@ static void amdgpu_perf_read(struct perf_event *event)
 			count = 0;
 			break;
 		}
-	} while (local64_cmpxchg(&hwc->prev_count, prev, count) != prev);
+	} while (!local64_try_cmpxchg(&hwc->prev_count, &prev, count));
 
 	local64_add(count - prev, &event->count);
 }
@@ -295,6 +302,10 @@ static void amdgpu_perf_stop(struct perf_event *event, int flags)
 						  pmu);
 
 	if (hwc->state & PERF_HES_UPTODATE)
+		return;
+
+	if ((!pe->adev->df.funcs) ||
+	    (!pe->adev->df.funcs->pmc_stop))
 		return;
 
 	switch (hwc->config_base) {
@@ -325,6 +336,10 @@ static int amdgpu_perf_add(struct perf_event *event, int flags)
 	struct amdgpu_pmu_entry *pe = container_of(event->pmu,
 						  struct amdgpu_pmu_entry,
 						  pmu);
+
+	if ((!pe->adev->df.funcs) ||
+	    (!pe->adev->df.funcs->pmc_start))
+		return -EINVAL;
 
 	switch (pe->pmu_perf_type) {
 	case AMDGPU_PMU_PERF_TYPE_DF:
@@ -371,6 +386,9 @@ static void amdgpu_perf_del(struct perf_event *event, int flags)
 	struct amdgpu_pmu_entry *pe = container_of(event->pmu,
 						  struct amdgpu_pmu_entry,
 						  pmu);
+	if ((!pe->adev->df.funcs) ||
+	    (!pe->adev->df.funcs->pmc_stop))
+		return;
 
 	amdgpu_perf_stop(event, PERF_EF_UPDATE);
 
@@ -428,25 +446,24 @@ static int amdgpu_pmu_alloc_pmu_attrs(
 				struct amdgpu_pmu_event_attribute **evt_attr,
 				struct amdgpu_pmu_config *config)
 {
-	*fmt_attr = kcalloc(config->num_formats, sizeof(**fmt_attr),
-								GFP_KERNEL);
+	*fmt_attr = kzalloc_objs(**fmt_attr, config->num_formats);
 
 	if (!(*fmt_attr))
 		return -ENOMEM;
 
-	fmt_attr_group->attrs = kcalloc(config->num_formats + 1,
-				sizeof(*fmt_attr_group->attrs), GFP_KERNEL);
+	fmt_attr_group->attrs = kzalloc_objs(*fmt_attr_group->attrs,
+					     config->num_formats + 1);
 
 	if (!fmt_attr_group->attrs)
 		goto err_fmt_attr_grp;
 
-	*evt_attr = kcalloc(config->num_events, sizeof(**evt_attr), GFP_KERNEL);
+	*evt_attr = kzalloc_objs(**evt_attr, config->num_events);
 
 	if (!(*evt_attr))
 		goto err_evt_attr;
 
-	evt_attr_group->attrs = kcalloc(config->num_events + 1,
-				sizeof(*evt_attr_group->attrs), GFP_KERNEL);
+	evt_attr_group->attrs = kzalloc_objs(*evt_attr_group->attrs,
+					     config->num_events + 1);
 
 	if (!evt_attr_group->attrs)
 		goto err_evt_attr_grp;
@@ -581,7 +598,7 @@ static struct amdgpu_pmu_entry *create_pmu_entry(struct amdgpu_device *adev,
 {
 	struct amdgpu_pmu_entry *pmu_entry;
 
-	pmu_entry = kzalloc(sizeof(struct amdgpu_pmu_entry), GFP_KERNEL);
+	pmu_entry = kzalloc_obj(struct amdgpu_pmu_entry);
 
 	if (!pmu_entry)
 		return pmu_entry;

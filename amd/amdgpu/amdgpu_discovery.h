@@ -24,17 +24,27 @@
 #ifndef __AMDGPU_DISCOVERY__
 #define __AMDGPU_DISCOVERY__
 
-#define DISCOVERY_TMR_SIZE      (4 << 10)
+#include <linux/debugfs.h>
+
+#define DISCOVERY_TMR_SIZE      (10 << 10)
 #define DISCOVERY_TMR_OFFSET    (64 << 10)
 
-void amdgpu_discovery_fini(struct amdgpu_device *adev);
-int amdgpu_discovery_reg_base_init(struct amdgpu_device *adev);
-void amdgpu_discovery_harvest_ip(struct amdgpu_device *adev);
-int amdgpu_discovery_get_ip_version(struct amdgpu_device *adev, int hw_id, int number_instance,
-                                    int *major, int *minor, int *revision);
+struct ip_discovery_top;
 
-int amdgpu_discovery_get_vcn_version(struct amdgpu_device *adev, int vcn_instance,
-				     int *major, int *minor, int *revision);
-int amdgpu_discovery_get_gfx_info(struct amdgpu_device *adev);
+struct amdgpu_discovery_info {
+	struct debugfs_blob_wrapper debugfs_blob;
+	struct ip_discovery_top *ip_top;
+	uint32_t size;
+	uint8_t *bin;
+	bool reserve_tmr;
+};
+
+void amdgpu_discovery_fini(struct amdgpu_device *adev);
+int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev);
+
+int amdgpu_discovery_get_nps_info(struct amdgpu_device *adev,
+				  uint32_t *nps_type,
+				  struct amdgpu_gmc_memrange **ranges,
+				  int *range_cnt, bool refresh);
 
 #endif /* __AMDGPU_DISCOVERY__ */

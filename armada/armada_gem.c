@@ -10,10 +10,13 @@
 
 #include <drm/armada_drm.h>
 #include <drm/drm_prime.h>
+#include <drm/drm_print.h>
 
 #include "armada_drm.h"
 #include "armada_gem.h"
 #include "armada_ioctlP.h"
+
+MODULE_IMPORT_NS("DMA_BUF");
 
 static vm_fault_t armada_gem_vm_fault(struct vm_fault *vmf)
 {
@@ -64,8 +67,8 @@ void armada_gem_free_object(struct drm_gem_object *obj)
 	if (dobj->obj.import_attach) {
 		/* We only ever display imported data */
 		if (dobj->sgt)
-			dma_buf_unmap_attachment(dobj->obj.import_attach,
-						 dobj->sgt, DMA_TO_DEVICE);
+			dma_buf_unmap_attachment_unlocked(dobj->obj.import_attach,
+							  dobj->sgt, DMA_TO_DEVICE);
 		drm_prime_gem_destroy(&dobj->obj, NULL);
 	}
 
@@ -105,11 +108,11 @@ armada_gem_linear_back(struct drm_device *dev, struct armada_gem_object *obj)
 	}
 
 	/*
-	 * We could grab something from CMA if it's enabled, but that
+	 * We could grab something from DMA if it's enabled, but that
 	 * involves building in a problem:
 	 *
-	 * CMA's interface uses dma_alloc_coherent(), which provides us
-	 * with an CPU virtual address and a device address.
+	 * GEM DMA helper interface uses dma_alloc_coherent(), which provides
+	 * us with an CPU virtual address and a device address.
 	 *
 	 * The CPU virtual address may be either an address in the kernel
 	 * direct mapped region (for example, as it would be on x86) or
@@ -134,7 +137,7 @@ armada_gem_linear_back(struct drm_device *dev, struct armada_gem_object *obj)
 		void __iomem *ptr;
 		int ret;
 
-		node = kzalloc(sizeof(*node), GFP_KERNEL);
+		node = kzalloc_obj(*node);
 		if (!node)
 			return -ENOSPC;
 
@@ -197,7 +200,7 @@ armada_gem_alloc_private_object(struct drm_device *dev, size_t size)
 
 	size = roundup_gem_size(size);
 
-	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
+	obj = kzalloc_obj(*obj);
 	if (!obj)
 		return NULL;
 
@@ -218,7 +221,7 @@ static struct armada_gem_object *armada_gem_alloc_object(struct drm_device *dev,
 
 	size = roundup_gem_size(size);
 
-	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
+	obj = kzalloc_obj(*obj);
 	if (!obj)
 		return NULL;
 
@@ -336,7 +339,7 @@ int armada_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 	struct drm_armada_gem_pwrite *args = data;
 	struct armada_gem_object *dobj;
 	char __user *ptr;
-	int ret;
+	int ret = 0;
 
 	DRM_DEBUG_DRIVER("handle %u off %u size %u ptr 0x%llx\n",
 		args->handle, args->offset, args->size, args->ptr);
@@ -349,9 +352,8 @@ int armada_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 	if (!access_ok(ptr, args->size))
 		return -EFAULT;
 
-	ret = fault_in_pages_readable(ptr, args->size);
-	if (ret)
-		return ret;
+	if (fault_in_readable(ptr, args->size))
+		return -EFAULT;
 
 	dobj = armada_gem_object_lookup(file, args->handle);
 	if (dobj == NULL)
@@ -391,7 +393,7 @@ armada_gem_prime_map_dma_buf(struct dma_buf_attachment *attach,
 	struct sg_table *sgt;
 	int i;
 
-	sgt = kmalloc(sizeof(*sgt), GFP_KERNEL);
+	sgt = kmalloc_obj(*sgt);
 	if (!sgt)
 		return NULL;
 
@@ -538,8 +540,8 @@ int armada_gem_map_import(struct armada_gem_object *dobj)
 {
 	int ret;
 
-	dobj->sgt = dma_buf_map_attachment(dobj->obj.import_attach,
-					   DMA_TO_DEVICE);
+	dobj->sgt = dma_buf_map_attachment_unlocked(dobj->obj.import_attach,
+						    DMA_TO_DEVICE);
 	if (IS_ERR(dobj->sgt)) {
 		ret = PTR_ERR(dobj->sgt);
 		dobj->sgt = NULL;

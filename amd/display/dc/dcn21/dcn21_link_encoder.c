@@ -31,7 +31,6 @@
 #include "dcn21_link_encoder.h"
 #include "stream_encoder.h"
 
-#include "i2caux_interface.h"
 #include "dc_bios_types.h"
 
 #include "gpio_service_interface.h"
@@ -203,7 +202,7 @@ static bool update_cfg_data(
 	return true;
 }
 
-bool dcn21_link_encoder_acquire_phy(struct link_encoder *enc)
+static bool dcn21_link_encoder_acquire_phy(struct link_encoder *enc)
 {
 	struct dcn10_link_encoder *enc10 = TO_DCN10_LINK_ENC(enc);
 	int value;
@@ -277,7 +276,7 @@ void dcn21_link_encoder_enable_dp_output(
 
 }
 
-void dcn21_link_encoder_enable_dp_mst_output(
+static void dcn21_link_encoder_enable_dp_mst_output(
 	struct link_encoder *enc,
 	const struct dc_link_settings *link_settings,
 	enum clock_source_id clock_source)
@@ -288,9 +287,8 @@ void dcn21_link_encoder_enable_dp_mst_output(
 	dcn10_link_encoder_enable_dp_mst_output(enc, link_settings, clock_source);
 }
 
-void dcn21_link_encoder_disable_output(
-	struct link_encoder *enc,
-	enum signal_type signal)
+static void dcn21_link_encoder_disable_output(struct link_encoder *enc,
+					      enum signal_type signal)
 {
 	dcn10_link_encoder_disable_output(enc, signal);
 
@@ -327,6 +325,8 @@ static const struct link_encoder_funcs dcn21_link_enc_funcs = {
 	.get_dig_frontend = dcn10_get_dig_frontend,
 	.is_in_alt_mode = dcn20_link_encoder_is_in_alt_mode,
 	.get_max_link_cap = dcn20_link_encoder_get_max_link_cap,
+	.get_hpd_state = dcn10_get_hpd_state,
+	.program_hpd_filter = dcn10_program_hpd_filter,
 };
 
 void dcn21_link_encoder_construct(
@@ -348,6 +348,7 @@ void dcn21_link_encoder_construct(
 	enc10->base.ctx = init_data->ctx;
 	enc10->base.id = init_data->encoder;
 
+	enc10->base.hpd_gpio = init_data->hpd_gpio;
 	enc10->base.hpd_source = init_data->hpd_source;
 	enc10->base.connector = init_data->connector;
 

@@ -47,7 +47,6 @@
 /* unit: MHz */
 #define CYAN_SKILLFISH_SCLK_MIN			1000
 #define CYAN_SKILLFISH_SCLK_MAX			2000
-#define CYAN_SKILLFISH_SCLK_DEFAULT			1800
 
 /* unit: mV */
 #define CYAN_SKILLFISH_VDDC_MIN			700
@@ -59,11 +58,15 @@ static struct gfx_user_settings {
 	uint32_t vddc;
 } cyan_skillfish_user_settings;
 
-#define FEATURE_MASK(feature) (1ULL << feature)
-#define SMC_DPM_FEATURE ( \
-	FEATURE_MASK(FEATURE_FCLK_DPM_BIT)	|	\
-	FEATURE_MASK(FEATURE_SOC_DPM_BIT)	|	\
-	FEATURE_MASK(FEATURE_GFX_DPM_BIT))
+static uint32_t cyan_skillfish_sclk_default;
+
+static const struct smu_feature_bits cyan_skillfish_dpm_features = {
+	.bits = {
+		SMU_FEATURE_BIT_INIT(FEATURE_FCLK_DPM_BIT),
+		SMU_FEATURE_BIT_INIT(FEATURE_SOC_DPM_BIT),
+		SMU_FEATURE_BIT_INIT(FEATURE_GFX_DPM_BIT)
+	}
+};
 
 static struct cmn2asic_msg_mapping cyan_skillfish_message_map[SMU_MSG_MAX_COUNT] = {
 	MSG_MAP(TestMessage,                    PPSMC_MSG_TestMessage,			0),
@@ -87,19 +90,21 @@ static int cyan_skillfish_tables_init(struct smu_context *smu)
 {
 	struct smu_table_context *smu_table = &smu->smu_table;
 	struct smu_table *tables = smu_table->tables;
+	int ret;
 
 	SMU_TABLE_INIT(tables, SMU_TABLE_SMU_METRICS,
 				sizeof(SmuMetrics_t),
 				PAGE_SIZE,
 				AMDGPU_GEM_DOMAIN_VRAM);
 
-	smu_table->metrics_table = kzalloc(sizeof(SmuMetrics_t), GFP_KERNEL);
+	smu_table->metrics_table = kzalloc_obj(SmuMetrics_t);
 	if (!smu_table->metrics_table)
 		goto err0_out;
 
-	smu_table->gpu_metrics_table_size = sizeof(struct gpu_metrics_v2_2);
-	smu_table->gpu_metrics_table = kzalloc(smu_table->gpu_metrics_table_size, GFP_KERNEL);
-	if (!smu_table->gpu_metrics_table)
+	ret = smu_driver_table_init(smu, SMU_DRIVER_TABLE_GPU_METRICS,
+				    sizeof(struct gpu_metrics_v2_2),
+				    SMU_GPU_METRICS_CACHE_INTERVAL);
+	if (ret)
 		goto err1_out;
 
 	smu_table->metrics_time = 0;
@@ -107,7 +112,6 @@ static int cyan_skillfish_tables_init(struct smu_context *smu)
 	return 0;
 
 err1_out:
-	smu_table->gpu_metrics_table_size = 0;
 	kfree(smu_table->metrics_table);
 err0_out:
 	return -ENOMEM;
@@ -124,22 +128,6 @@ static int cyan_skillfish_init_smc_tables(struct smu_context *smu)
 	return smu_v11_0_init_smc_tables(smu);
 }
 
-static int cyan_skillfish_finit_smc_tables(struct smu_context *smu)
-{
-	struct smu_table_context *smu_table = &smu->smu_table;
-
-	kfree(smu_table->metrics_table);
-	smu_table->metrics_table = NULL;
-
-	kfree(smu_table->gpu_metrics_table);
-	smu_table->gpu_metrics_table = NULL;
-	smu_table->gpu_metrics_table_size = 0;
-
-	smu_table->metrics_time = 0;
-
-	return 0;
-}
-
 static int
 cyan_skillfish_get_smu_metrics_data(struct smu_context *smu,
 					MetricsMember_t member,
@@ -149,13 +137,9 @@ cyan_skillfish_get_smu_metrics_data(struct smu_context *smu,
 	SmuMetrics_t *metrics = (SmuMetrics_t *)smu_table->metrics_table;
 	int ret = 0;
 
-	mutex_lock(&smu->metrics_lock);
-
-	ret = smu_cmn_get_metrics_table_locked(smu, NULL, false);
-	if (ret) {
-		mutex_unlock(&smu->metrics_lock);
+	ret = smu_cmn_get_metrics_table(smu, NULL, false);
+	if (ret)
 		return ret;
-	}
 
 	switch (member) {
 	case METRICS_CURR_GFXCLK:
@@ -173,8 +157,12 @@ cyan_skillfish_get_smu_metrics_data(struct smu_context *smu,
 	case METRICS_CURR_UCLK:
 		*value = metrics->Current.MemclkFrequency;
 		break;
-	case METRICS_AVERAGE_SOCKETPOWER:
+	case METRICS_CURR_SOCKETPOWER:
 		*value = (metrics->Current.CurrentSocketPower << 8) /
+				1000;
+		break;
+	case METRICS_AVERAGE_SOCKETPOWER:
+		*value = (metrics->Average.CurrentSocketPower << 8) /
 				1000;
 		break;
 	case METRICS_TEMPERATURE_EDGE:
@@ -199,8 +187,6 @@ cyan_skillfish_get_smu_metrics_data(struct smu_context *smu,
 		break;
 	}
 
-	mutex_unlock(&smu->metrics_lock);
-
 	return ret;
 }
 
@@ -213,8 +199,6 @@ static int cyan_skillfish_read_sensor(struct smu_context *smu,
 
 	if (!data || !size)
 		return -EINVAL;
-
-	mutex_lock(&smu->sensor_lock);
 
 	switch (sensor) {
 	case AMDGPU_PP_SENSOR_GFX_SCLK:
@@ -231,9 +215,15 @@ static int cyan_skillfish_read_sensor(struct smu_context *smu,
 		*(uint32_t *)data *= 100;
 		*size = 4;
 		break;
-	case AMDGPU_PP_SENSOR_GPU_POWER:
+	case AMDGPU_PP_SENSOR_GPU_AVG_POWER:
 		ret = cyan_skillfish_get_smu_metrics_data(smu,
 						   METRICS_AVERAGE_SOCKETPOWER,
+						   (uint32_t *)data);
+		*size = 4;
+		break;
+	case AMDGPU_PP_SENSOR_GPU_INPUT_POWER:
+		ret = cyan_skillfish_get_smu_metrics_data(smu,
+						   METRICS_CURR_SOCKETPOWER,
 						   (uint32_t *)data);
 		*size = 4;
 		break;
@@ -265,8 +255,6 @@ static int cyan_skillfish_read_sensor(struct smu_context *smu,
 		ret = -EOPNOTSUPP;
 		break;
 	}
-
-	mutex_unlock(&smu->sensor_lock);
 
 	return ret;
 }
@@ -302,14 +290,13 @@ static int cyan_skillfish_get_current_clk_freq(struct smu_context *smu,
 	return cyan_skillfish_get_smu_metrics_data(smu, member_type, value);
 }
 
-static int cyan_skillfish_print_clk_levels(struct smu_context *smu,
-					enum smu_clk_type clk_type,
-					char *buf)
+static int cyan_skillfish_emit_clk_levels(struct smu_context *smu,
+					  enum smu_clk_type clk_type, char *buf,
+					  int *offset)
 {
-	int ret = 0, size = 0;
+	int ret = 0, size = *offset, start_offset = *offset;
 	uint32_t cur_value = 0;
-
-	smu_cmn_get_sysfs_buf(&buf, &size);
+	int i;
 
 	switch (clk_type) {
 	case SMU_OD_SCLK:
@@ -333,8 +320,6 @@ static int cyan_skillfish_print_clk_levels(struct smu_context *smu,
 		size += sysfs_emit_at(buf, size, "VDDC: %7umV  %10umV\n",
 						CYAN_SKILLFISH_VDDC_MIN, CYAN_SKILLFISH_VDDC_MAX);
 		break;
-	case SMU_GFXCLK:
-	case SMU_SCLK:
 	case SMU_FCLK:
 	case SMU_MCLK:
 	case SMU_SOCCLK:
@@ -345,42 +330,66 @@ static int cyan_skillfish_print_clk_levels(struct smu_context *smu,
 			return ret;
 		size += sysfs_emit_at(buf, size, "0: %uMhz *\n", cur_value);
 		break;
+	case SMU_SCLK:
+	case SMU_GFXCLK:
+		ret = cyan_skillfish_get_current_clk_freq(smu, clk_type, &cur_value);
+		if (ret)
+			return ret;
+		if (cur_value  == CYAN_SKILLFISH_SCLK_MAX)
+			i = 2;
+		else if (cur_value == CYAN_SKILLFISH_SCLK_MIN)
+			i = 0;
+		else
+			i = 1;
+		size += sysfs_emit_at(buf, size, "0: %uMhz %s\n", CYAN_SKILLFISH_SCLK_MIN,
+				i == 0 ? "*" : "");
+		size += sysfs_emit_at(buf, size, "1: %uMhz %s\n",
+				i == 1 ? cur_value : cyan_skillfish_sclk_default,
+				i == 1 ? "*" : "");
+		size += sysfs_emit_at(buf, size, "2: %uMhz %s\n", CYAN_SKILLFISH_SCLK_MAX,
+				i == 2 ? "*" : "");
+		break;
 	default:
 		dev_warn(smu->adev->dev, "Unsupported clock type\n");
 		return ret;
 	}
 
-	return size;
+	*offset += size - start_offset;
+
+	return 0;
 }
 
 static bool cyan_skillfish_is_dpm_running(struct smu_context *smu)
 {
 	struct amdgpu_device *adev = smu->adev;
 	int ret = 0;
-	uint32_t feature_mask[2];
-	uint64_t feature_enabled;
+	struct smu_feature_bits feature_enabled;
 
 	/* we need to re-init after suspend so return false */
 	if (adev->in_suspend)
 		return false;
 
-	ret = smu_cmn_get_enabled_32_bits_mask(smu, feature_mask, 2);
-
+	ret = smu_cmn_get_enabled_mask(smu, &feature_enabled);
 	if (ret)
 		return false;
 
-	feature_enabled = (uint64_t)feature_mask[0] |
-				((uint64_t)feature_mask[1] << 32);
+	/*
+	 * cyan_skillfish specific, query default sclk inseted of hard code.
+	 */
+	if (!cyan_skillfish_sclk_default)
+		cyan_skillfish_get_smu_metrics_data(smu, METRICS_CURR_GFXCLK,
+			&cyan_skillfish_sclk_default);
 
-	return !!(feature_enabled & SMC_DPM_FEATURE);
+	return smu_feature_bits_test_mask(&feature_enabled,
+					  cyan_skillfish_dpm_features.bits);
 }
 
 static ssize_t cyan_skillfish_get_gpu_metrics(struct smu_context *smu,
 						void **table)
 {
-	struct smu_table_context *smu_table = &smu->smu_table;
 	struct gpu_metrics_v2_2 *gpu_metrics =
-		(struct gpu_metrics_v2_2 *)smu_table->gpu_metrics_table;
+		(struct gpu_metrics_v2_2 *)smu_driver_table_ptr(
+			smu, SMU_DRIVER_TABLE_GPU_METRICS);
 	SmuMetrics_t metrics;
 	int i, ret = 0;
 
@@ -427,6 +436,8 @@ static ssize_t cyan_skillfish_get_gpu_metrics(struct smu_context *smu,
 
 	*table = (void *)gpu_metrics;
 
+	smu_driver_table_update_cache_time(smu, SMU_DRIVER_TABLE_GPU_METRICS);
+
 	return sizeof(struct gpu_metrics_v2_2);
 }
 
@@ -444,14 +455,14 @@ static int cyan_skillfish_od_edit_dpm_table(struct smu_context *smu,
 			return -EINVAL;
 		}
 
-		if (input[1] <= CYAN_SKILLFISH_SCLK_MIN ||
+		if (input[1] < CYAN_SKILLFISH_SCLK_MIN ||
 			input[1] > CYAN_SKILLFISH_SCLK_MAX) {
 			dev_err(smu->adev->dev, "Invalid sclk! Valid sclk range: %uMHz - %uMhz\n",
 					CYAN_SKILLFISH_SCLK_MIN, CYAN_SKILLFISH_SCLK_MAX);
 			return -EINVAL;
 		}
 
-		if (input[2] <= CYAN_SKILLFISH_VDDC_MIN ||
+		if (input[2] < CYAN_SKILLFISH_VDDC_MIN ||
 			input[2] > CYAN_SKILLFISH_VDDC_MAX) {
 			dev_err(smu->adev->dev, "Invalid vddc! Valid vddc range: %umV - %umV\n",
 					CYAN_SKILLFISH_VDDC_MIN, CYAN_SKILLFISH_VDDC_MAX);
@@ -468,7 +479,7 @@ static int cyan_skillfish_od_edit_dpm_table(struct smu_context *smu,
 			return -EINVAL;
 		}
 
-		cyan_skillfish_user_settings.sclk = CYAN_SKILLFISH_SCLK_DEFAULT;
+		cyan_skillfish_user_settings.sclk = cyan_skillfish_sclk_default;
 		cyan_skillfish_user_settings.vddc = CYAN_SKILLFISH_VDDC_MAGIC;
 
 		break;
@@ -527,6 +538,47 @@ static int cyan_skillfish_od_edit_dpm_table(struct smu_context *smu,
 	return ret;
 }
 
+static int cyan_skillfish_get_dpm_ultimate_freq(struct smu_context *smu,
+						enum smu_clk_type clk_type,
+						uint32_t *min,
+						uint32_t *max)
+{
+	int ret = 0;
+	uint32_t low, high;
+
+	switch (clk_type) {
+	case SMU_GFXCLK:
+	case SMU_SCLK:
+		low = CYAN_SKILLFISH_SCLK_MIN;
+		high = CYAN_SKILLFISH_SCLK_MAX;
+		break;
+	default:
+		ret = cyan_skillfish_get_current_clk_freq(smu, clk_type, &low);
+		if (ret)
+			return ret;
+		high = low;
+		break;
+	}
+
+	if (min)
+		*min = low;
+	if (max)
+		*max = high;
+
+	return 0;
+}
+
+static int
+cyan_skillfish_get_enabled_mask(struct smu_context *smu,
+				struct smu_feature_bits *feature_mask)
+{
+	if (!feature_mask)
+		return -EINVAL;
+	smu_feature_bits_fill(feature_mask);
+
+	return 0;
+}
+
 static const struct pptable_funcs cyan_skillfish_ppt_funcs = {
 
 	.check_fw_status = smu_v11_0_check_fw_status,
@@ -534,16 +586,16 @@ static const struct pptable_funcs cyan_skillfish_ppt_funcs = {
 	.init_power = smu_v11_0_init_power,
 	.fini_power = smu_v11_0_fini_power,
 	.init_smc_tables = cyan_skillfish_init_smc_tables,
-	.fini_smc_tables = cyan_skillfish_finit_smc_tables,
+	.fini_smc_tables = smu_v11_0_fini_smc_tables,
 	.read_sensor = cyan_skillfish_read_sensor,
-	.print_clk_levels = cyan_skillfish_print_clk_levels,
+	.emit_clk_levels = cyan_skillfish_emit_clk_levels,
+	.get_enabled_mask = cyan_skillfish_get_enabled_mask,
 	.is_dpm_running = cyan_skillfish_is_dpm_running,
 	.get_gpu_metrics = cyan_skillfish_get_gpu_metrics,
 	.od_edit_dpm_table = cyan_skillfish_od_edit_dpm_table,
+	.get_dpm_ultimate_freq = cyan_skillfish_get_dpm_ultimate_freq,
 	.register_irq_handler = smu_v11_0_register_irq_handler,
 	.notify_memory_pool_location = smu_v11_0_notify_memory_pool_location,
-	.send_smc_msg_with_param = smu_cmn_send_smc_msg_with_param,
-	.send_smc_msg = smu_cmn_send_smc_msg,
 	.set_driver_table_location = smu_v11_0_set_driver_table_location,
 	.interrupt_work = smu_v11_0_interrupt_work,
 };
@@ -551,7 +603,7 @@ static const struct pptable_funcs cyan_skillfish_ppt_funcs = {
 void cyan_skillfish_set_ppt_funcs(struct smu_context *smu)
 {
 	smu->ppt_funcs = &cyan_skillfish_ppt_funcs;
-	smu->message_map = cyan_skillfish_message_map;
 	smu->table_map = cyan_skillfish_table_map;
 	smu->is_apu = true;
+	smu_v11_0_init_msg_ctl(smu, cyan_skillfish_message_map);
 }

@@ -3,9 +3,13 @@
  * Copyright © 2016-2018 Intel Corporation
  */
 
-#include "i915_drv.h"
+#include <drm/drm_cache.h>
+#include <drm/drm_print.h>
+
+#include "gem/i915_gem_internal.h"
 
 #include "i915_active.h"
+#include "i915_drv.h"
 #include "i915_syncmap.h"
 #include "intel_gt.h"
 #include "intel_ring.h"
@@ -147,7 +151,7 @@ __intel_timeline_create(struct intel_gt *gt,
 	struct intel_timeline *timeline;
 	int err;
 
-	timeline = kzalloc(sizeof(*timeline), GFP_KERNEL);
+	timeline = kzalloc_obj(*timeline);
 	if (!timeline)
 		return ERR_PTR(-ENOMEM);
 

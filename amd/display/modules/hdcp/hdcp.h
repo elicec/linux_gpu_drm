@@ -29,8 +29,8 @@
 #include "mod_hdcp.h"
 #include "hdcp_log.h"
 
-#include <drm/drm_hdcp.h>
-#include <drm/drm_dp_helper.h>
+#include <drm/display/drm_dp_helper.h>
+#include <drm/display/drm_hdcp_helper.h>
 
 enum mod_hdcp_trans_input_result {
 	UNKNOWN = 0,
@@ -88,6 +88,7 @@ struct mod_hdcp_transition_input_hdcp2 {
 	uint8_t lc_init_write;
 	uint8_t l_prime_available_poll;
 	uint8_t l_prime_read;
+	uint8_t l_prime_combo_read;
 	uint8_t l_prime_validation;
 	uint8_t eks_prepare;
 	uint8_t eks_write;
@@ -386,6 +387,7 @@ enum mod_hdcp_status mod_hdcp_write_repeater_auth_ack(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_write_stream_manage(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_write_content_type(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_clear_cp_irq_status(struct mod_hdcp *hdcp);
+enum mod_hdcp_status mod_hdcp_write_poll_read_lc_fw(struct mod_hdcp *hdcp);
 
 /* hdcp version helpers */
 static inline uint8_t is_dp_hdcp(struct mod_hdcp *hdcp)
@@ -445,6 +447,14 @@ static inline uint8_t is_in_hdcp2_dp_states(struct mod_hdcp *hdcp)
 			current_state(hdcp) <= HDCP2_DP_STATE_END);
 }
 
+static inline uint8_t is_in_authenticated_states(struct mod_hdcp *hdcp)
+{
+	return (current_state(hdcp) == D1_A4_AUTHENTICATED ||
+	current_state(hdcp) == H1_A45_AUTHENTICATED ||
+	current_state(hdcp) == D2_A5_AUTHENTICATED ||
+	current_state(hdcp) == H2_A5_AUTHENTICATED);
+}
+
 static inline uint8_t is_hdcp1(struct mod_hdcp *hdcp)
 {
 	return (is_in_hdcp1_states(hdcp) || is_in_hdcp1_dp_states(hdcp));
@@ -499,7 +509,7 @@ static inline void set_auth_complete(struct mod_hdcp *hdcp,
 		struct mod_hdcp_output *output)
 {
 	output->auth_complete = 1;
-	mod_hdcp_log_ddc_trace(hdcp);
+	HDCP_AUTH_COMPLETE_TRACE(hdcp);
 }
 
 /* connection topology helpers */
